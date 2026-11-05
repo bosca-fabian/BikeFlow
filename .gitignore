@@ -1,0 +1,25 @@
+# Local config
+.env
+
+# Data lives outside git: data/raw (downloads, recordings), data/lake (Delta tables), data/reports.
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Spark leftovers when run outside the lake
+spark-warehouse/
+metastore_db/
+derby.log
+checkpoint/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

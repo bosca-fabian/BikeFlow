@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bikeflow"
+version = "0.1.0"
+description = "BikeFlow: real-time rebalancing radar for bike-share systems"
+requires-python = ">=3.11"
+# Exact versions live in requirements.txt (shared by Docker and local venvs).
+dependencies = []
+
+[project.scripts]
+bikeflow-ingest = "bikeflow.ingest.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["spark: needs pyspark + Java (skipped automatically if unavailable)"]
+
+[tool.ruff]
+line-length = 120

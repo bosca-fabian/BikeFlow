@@ -1,0 +1,13 @@
+.git
+.env
+# The data folder can hold tens of GB; it is mounted at run time, never copied into the image
+data
+lake
+**/__pycache__
+**/*.egg-info
+.venv
+venv
+.pytest_cache
+.ruff_cache
+spark-warehouse
+metastore_db

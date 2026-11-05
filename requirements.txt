@@ -1,0 +1,20 @@
+# One environment for the whole team (Docker image and local venvs).
+# Add libraries at the bottom with an exact version, then: docker compose up -d --build
+#
+# Spark + Delta Lake: the versions from the batch path (Vlad). Keep them as a pair:
+# Delta 3.2.x <-> Spark 3.5.x (Scala 2.12). Needs Java 17.
+pyspark==3.5.3
+delta-spark==3.2.1
+pandas==2.3.3
+pyarrow==22.0.0
+requests==2.32.5
+
+# --- Ingestion (Kafka producer, lake sink, replay) ---
+confluent-kafka==2.16.1
+deltalake==1.6.6
+tzdata==2026.6
+
+# --- Speed layer client ---
+redis==6.4.0
+
+# --- Add below (e.g. streamlit) ---
