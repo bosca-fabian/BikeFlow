@@ -8,6 +8,8 @@ delta-spark==3.2.1
 pandas==2.3.3
 pyarrow==22.0.0
 requests==2.32.5
+# PySpark 3.5 imports distutils, which Python 3.12 no longer ships; setuptools provides it
+setuptools==84.2.1
 
 # --- Ingestion (Kafka producer, lake sink, replay) ---
 confluent-kafka==2.16.1
