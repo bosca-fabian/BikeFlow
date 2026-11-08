@@ -45,8 +45,12 @@ def read_station_status_stream(
     topic: str | None = None,
     starting_offsets: str = "latest",
     max_offsets_per_trigger: int | None = None,
+    replay: bool = False,
 ):
     """Streaming DataFrame of station_status messages from Kafka, already parsed.
+
+    ``replay=True`` reads the replay topic (recorded daytime data, ``source = "replay"``)
+    instead of the live one, as promised in docs/DATA_CONTRACT.md, "Replay topic".
 
     Columns: every field from docs/DATA_CONTRACT.md plus kafka_partition,
     kafka_offset and kafka_timestamp.
@@ -54,7 +58,7 @@ def read_station_status_stream(
     from pyspark.sql import functions as F
 
     s = config.settings
-    topic = topic or s.topic_station_status
+    topic = topic or (s.topic_station_status_replay if replay else s.topic_station_status)
     reader = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", s.kafka_bootstrap)

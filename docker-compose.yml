@@ -91,6 +91,20 @@ services:
     restart: unless-stopped
     stop_grace_period: 60s
 
+  # Kafka `station_status` -> Spark Structured Streaming -> Redis: the live state of
+  # every station, the empty/full alerts and the 30-minute warnings (docs/SPEED_LAYER.md).
+  stream:
+    <<: *app
+    command: ["bikeflow-stream", "run"]
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "4041:4040"
+
   # Shared environment for everyone's own code (Spark jobs, scripts, tests); the repo is mounted.
   spark:
     <<: *app
