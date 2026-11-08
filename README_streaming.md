@@ -52,7 +52,12 @@ bikeflow-stream run --starting-offsets earliest      # re-read the topic from th
 bikeflow-stream run --once                           # process what is in Kafka, then stop
 bikeflow-stream run --replay                         # read `station_status_replay` (demo)
 bikeflow-stream run --trigger-seconds 5              # faster micro-batches for a demo
+bikeflow-stream run --log-file logs/stream.log       # also write the log to a file
 ```
+
+`logs/` is in the repository but everything inside it is ignored by git: a run log is
+not part of the code. Use `--log-file` (or the `LOG_FILE` environment variable) rather
+than redirecting, so the Spark messages go to the file too.
 
 A replay uses the same checkpoint folder as the live run (`STREAM_JOB_NAME`), so give
 the demo its own name and keep the live checkpoint intact:
@@ -84,6 +89,7 @@ All of them have a working default; `src/bikeflow/config.py` is the source of tr
 | `WARNING_TTL_SECONDS` | `900` | how long a warning stays in Redis |
 | `DEMAND_PROFILES_TABLE` | `demand_profiles` | batch table with the usual demand |
 | `STATION_STATE_TTL_SECONDS` | `0` | `0` keeps station state forever |
+| `LOG_FILE` | empty | also append the log to this file (`--log-file`); `logs/` is git-ignored |
 
 ## What is not implemented yet (on purpose)
 

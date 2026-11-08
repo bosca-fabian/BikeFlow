@@ -18,14 +18,21 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 
 
-def _setup_logging() -> None:
+def _setup_logging(log_file: str | None = None) -> None:
+    """Log to stdout and, when asked, to a file (``logs/stream.log`` and similar)."""
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        path = Path(log_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(path, encoding="utf-8"))
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
-        stream=sys.stdout,
+        handlers=handlers,
     )
 
 
@@ -117,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--trigger-seconds", type=int, default=None, help="micro-batch interval (default STREAM_TRIGGER_SECONDS)")
     sp.add_argument("--starting-offsets", choices=["earliest", "latest"], default=None)
     sp.add_argument("--job-name", default=None, help="also the checkpoint folder (default STREAM_JOB_NAME)")
+    sp.add_argument(
+        "--log-file",
+        default=os.getenv("LOG_FILE") or None,
+        help="also write the log to this file, e.g. logs/stream.log (default LOG_FILE)",
+    )
     sp.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("dump", help="print the live state kept in Redis")
@@ -131,8 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _setup_logging()
     args = build_parser().parse_args(argv)
+    _setup_logging(getattr(args, "log_file", None))
     return args.func(args)
 
 

@@ -90,7 +90,11 @@ class RedisStateWriter:
     # ------------------------------------------------------------------ reads
     def ping(self) -> bool:
         """Fail fast when Redis is not reachable (better than a silent empty dashboard)."""
-        return bool(self.client.ping())
+        try:
+            return bool(self.client.ping())
+        except Exception as exc:  # noqa: BLE001 - any connection problem is "not reachable"
+            log.error("Redis is not reachable: %s", exc)
+            return False
 
     def read_previous(self, station_ids: list[str]) -> dict[str, dict]:
         """The current ``bf:station:{id}`` hashes, one ``HGETALL`` per station in one pipeline."""
