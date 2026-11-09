@@ -1,31 +1,34 @@
-"""Data access for the dashboard (reads Delta tables with `deltalake`, no Spark).
+"""Data access for the dashboard.
 
-Live page: the latest state of each station, from `station_status_raw` (written by
-lake-sink, at most ~2 minutes behind the feed). It moves to Redis once the streaming
-job writes the live state there.
+Live page: read from the speed layer (Redis), which the streaming job keeps up to date:
+station state, open alerts and 30-minute warnings. Keys and fields are documented in
+docs/SPEED_LAYER.md; keys are built with `bikeflow.streaming.redis_keys`, so they match
+the job. The dashboard only reads Redis, never writes it.
 
-History page: aggregates computed here from `trips_clean` for the months loaded in the
-local lake. On the full 2024-2026 data they will come from the batch-processing tables
-instead; only the functions in the "History" section change, not the page.
+History page: Delta tables read with `deltalake` (no Spark). The aggregates are computed
+here from `trips_clean` for the months loaded in the local lake. On the full 2024-2026
+data they will come from the batch-processing tables instead; only the functions in the
+"History" section change, not the page.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyarrow.dataset as ds
+import redis
 from deltalake import DeltaTable
 
-from bikeflow.lake import STATION_STATUS_RAW, table_path
+from bikeflow.config import settings
+from bikeflow.lake import table_path
+from bikeflow.streaming import redis_keys
 
 NY_TZ = "America/New_York"
-# Stations whose last report is older than this are treated as out of service
-# (docs/DATA_CONTRACT.md, "Stations to leave out of alerts").
-STALE_AFTER = timedelta(hours=1)
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+# Redis status words -> labels shown on the page.
+STATUS_LABELS = {"ok": "OK", "empty": "Empty", "full": "Full", "out_of_service": "Out of service"}
 
 
 def _table(name: str) -> DeltaTable | None:
@@ -41,42 +44,73 @@ def _dataset(name: str) -> ds.Dataset | None:
 # ---------------------------------------------------------------- Live
 
 
-def live_stations() -> pd.DataFrame | None:
-    """One row per station: its latest status, location and a status label.
+def _hashes(r: redis.Redis, keys: list[str]) -> list[dict]:
+    pipe = r.pipeline(transaction=False)
+    for key in keys:
+        pipe.hgetall(key)
+    return [h for h in pipe.execute() if h]
 
-    status is one of: Empty, Full, OK, Out of service (not installed, not renting or
-    returning, or no report for over an hour). Empty/full follow the data contract:
-    empty = no bike to rent, full = no free dock.
-    """
-    status_ds, info_ds = _dataset(STATION_STATUS_RAW), _dataset("stations")
-    if status_ds is None or info_ds is None:
-        return None
 
-    since = (datetime.now(timezone.utc) - timedelta(days=1)).date()
-    cols = [
-        "station_id", "num_bikes_available", "num_ebikes_available", "num_bikes_disabled",
-        "num_docks_available", "num_docks_disabled", "is_installed", "is_renting", "is_returning",
-        "last_reported", "event_time",
-    ]
-    status = status_ds.to_table(columns=cols, filter=ds.field("event_date") >= since).to_pandas()
-    if status.empty:
-        return None
-    # Latest message per station = its current state (heartbeats keep quiet stations fresh).
-    status = status.sort_values("event_time").drop_duplicates("station_id", keep="last")
-
-    info = info_ds.to_table(columns=["station_id", "name", "lat", "lon", "region_id"]).to_pandas()
-    df = status.merge(info, on="station_id", how="inner")
-
-    reported = pd.to_datetime(df["last_reported"], unit="s", utc=True)
-    stale = reported.isna() | (pd.Timestamp.now(tz="UTC") - reported > STALE_AFTER)
-    in_service = df["is_installed"] & df["is_renting"] & df["is_returning"] & ~stale
-    df["status"] = np.select(
-        [~in_service, df["num_bikes_available"].eq(0), df["num_docks_available"].eq(0)],
-        ["Out of service", "Empty", "Full"],
-        default="OK",
-    )
-    df["last_change_ny"] = df["event_time"].dt.tz_convert(NY_TZ)
+def _numbers(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    for c in cols:
+        if c in df:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
+
+
+def _times(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    for c in cols:
+        if c in df:
+            df[c] = pd.to_datetime(df[c].replace("", None), utc=True, errors="coerce")
+    return df
+
+
+def live_state() -> dict | None:
+    """Everything the live page shows, from Redis, or None when the speed layer is empty.
+
+    Returns a dict with:
+      stats     bf:stats:live (counters, newest event time, lag behind the feed)
+      stations  one row per station (bf:station:{id}), status relabelled for the page
+      alerts    open alerts (bf:alerts:active -> bf:alert:{id}), with the station name
+      warnings  30-minute warnings (bf:warnings:active -> bf:warning:{id})
+      profiles  bf:meta:profiles ("missing" until the demand profiles exist)
+    """
+    r = redis.Redis.from_url(settings.redis_url, decode_responses=True, socket_timeout=5)
+    try:
+        stats = r.hgetall(redis_keys.stats_live())
+    except redis.ConnectionError:
+        return None
+    if not stats or not int(stats.get("total") or 0):
+        return None
+
+    ids: set[str] = set()
+    for status in redis_keys.STATUSES:
+        ids |= r.smembers(redis_keys.stations_by_status(status))
+    stations = pd.DataFrame(_hashes(r, [redis_keys.station(i) for i in sorted(ids)]))
+    stations = _numbers(stations, ["bikes", "ebikes", "bikes_disabled", "docks", "docks_disabled", "lat", "lon"])
+    stations = _times(stations, ["event_time", "condition_since", "alert_opened_at"])
+    stations["status"] = stations["status"].map(STATUS_LABELS).fillna("Out of service")
+
+    alert_ids = r.zrevrange(redis_keys.alerts_active(), 0, -1)
+    alerts = pd.DataFrame(_hashes(r, [redis_keys.alert(a) for a in alert_ids]))
+    if not alerts.empty:
+        alerts = _numbers(alerts, ["bikes", "docks"])
+        alerts = _times(alerts, ["opened_at", "condition_since"])
+        alerts = alerts.merge(stations[["station_id", "name"]], on="station_id", how="left")
+
+    warning_ids = r.zrange(redis_keys.warnings_active(), 0, -1)
+    warnings = pd.DataFrame(_hashes(r, [redis_keys.warning(w) for w in warning_ids]))
+    if not warnings.empty:
+        warnings = _numbers(warnings, ["bikes", "docks", "eta_minutes", "net_flow_per_hour"])
+        warnings = warnings.merge(stations[["station_id", "name"]], on="station_id", how="left")
+
+    return {
+        "stats": stats,
+        "stations": stations,
+        "alerts": alerts,
+        "warnings": warnings,
+        "profiles": r.hgetall(redis_keys.meta_profiles()),
+    }
 
 
 # ---------------------------------------------------------------- History

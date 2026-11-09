@@ -42,6 +42,19 @@ def layer():
     return SpeedLayer(RedisStateWriter(FakeRedis()))
 
 
+def test_empty_batches_keep_valid_counters(layer):
+    # The first micro-batch after a start from "latest" offsets has no rows, and with a
+    # 60 s feed and 15 s batches most later batches are empty too.
+    assert layer.process([], epoch_id=0).rows == 0
+    stats = layer.writer.client.hgetall(redis_keys.stats_live())
+    assert stats["total"] == "0" and "event_time" not in stats
+
+    layer.process([row()], epoch_id=1)
+    layer.process([], epoch_id=2)
+    stats = layer.writer.client.hgetall(redis_keys.stats_live())
+    assert stats["total"] == "1" and stats["event_time"] == "2026-11-04T12:00:00Z"
+
+
 def test_the_first_batch_only_starts_the_condition(layer):
     result = layer.process([row(bikes=0)], epoch_id=1)
     assert result.statuses["station-1"] == model.STATUS_EMPTY
