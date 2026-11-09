@@ -43,6 +43,10 @@ class Settings:
     # --- Kafka -------------------------------------------------------------
     kafka_bootstrap: str = field(default_factory=lambda: _env("KAFKA_BOOTSTRAP", "localhost:9092"))
     topic_station_status: str = field(default_factory=lambda: _env("TOPIC_STATION_STATUS", "station_status"))
+    # Recorded daytime data replayed through the same schema (source = "replay").
+    topic_station_status_replay: str = field(
+        default_factory=lambda: _env("TOPIC_STATION_STATUS_REPLAY", "station_status_replay")
+    )
     topic_partitions: int = field(default_factory=lambda: _env_int("TOPIC_PARTITIONS", 3))
     topic_retention_hours: int = field(default_factory=lambda: _env_int("TOPIC_RETENTION_HOURS", 72))
 
@@ -76,6 +80,33 @@ class Settings:
     # --- Spark (used by teammates' jobs) ------------------------------------------
     spark_master: str = field(default_factory=lambda: _env("SPARK_MASTER", "local[*]"))
     spark_driver_memory: str = field(default_factory=lambda: _env("SPARK_DRIVER_MEMORY", "4g"))
+
+    # --- Speed layer: Redis data model (owner: streaming lead) -------------------
+    # Every key the streaming job writes starts with this prefix (docs/SPEED_LAYER.md).
+    redis_key_prefix: str = field(default_factory=lambda: _env("REDIS_KEY_PREFIX", "bf"))
+    # Redis keys never outlive the process that owns them: closed alerts and warnings expire.
+    alert_history_ttl_seconds: int = field(default_factory=lambda: _env_int("ALERT_HISTORY_TTL_SECONDS", 3_600))
+    warning_ttl_seconds: int = field(default_factory=lambda: _env_int("WARNING_TTL_SECONDS", 900))
+    # 0 keeps station state forever (stale stations are detected from `last_reported`).
+    station_state_ttl_seconds: int = field(default_factory=lambda: _env_int("STATION_STATE_TTL_SECONDS", 0))
+
+    # --- Speed layer: the Spark Structured Streaming job (owner: streaming lead) --
+    stream_job_name: str = field(default_factory=lambda: _env("STREAM_JOB_NAME", "speed-layer"))
+    stream_trigger_seconds: int = field(default_factory=lambda: _env_int("STREAM_TRIGGER_SECONDS", 15))
+    stream_watermark_minutes: float = field(default_factory=lambda: _env_float("STREAM_WATERMARK_MINUTES", 2))
+    stream_starting_offsets: str = field(default_factory=lambda: _env("STREAM_STARTING_OFFSETS", "latest"))
+    # Empty/full alerts: the condition must hold this long before an alert opens
+    # (one snapshot of noise must not page an operator), then it escalates.
+    alert_open_after_minutes: float = field(default_factory=lambda: _env_float("ALERT_OPEN_AFTER_MINUTES", 2))
+    alert_critical_after_minutes: float = field(
+        default_factory=lambda: _env_float("ALERT_CRITICAL_AFTER_MINUTES", 10)
+    )
+    # Stations whose last report is older than this are left out of alerts
+    # (docs/DATA_CONTRACT.md, "Stations to leave out of alerts").
+    alert_stale_minutes: float = field(default_factory=lambda: _env_float("ALERT_STALE_MINUTES", 60))
+    # 30-minute warnings: how far ahead we look, and the table with the demand profiles.
+    warning_horizon_minutes: int = field(default_factory=lambda: _env_int("WARNING_HORIZON_MINUTES", 30))
+    demand_profiles_table: str = field(default_factory=lambda: _env("DEMAND_PROFILES_TABLE", "demand_profiles"))
 
     @property
     def lake_root(self) -> Path:

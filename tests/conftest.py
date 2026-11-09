@@ -8,6 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+# PySpark looks for `python3` by default; on Windows that is the Microsoft Store alias,
+# which Spark cannot spawn ("Python worker exited unexpectedly"). Point the workers at
+# the interpreter running the tests.
+os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+
 
 def station(i: int, bikes: int = 5, docks: int = 10, ebikes: int = 1, renting: int = 1) -> dict:
     """A station record shaped like Citi Bike's GBFS 2.x station_status."""
