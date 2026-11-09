@@ -2,6 +2,9 @@
 
     docker compose up -d dashboard        then open http://localhost:8501
 
+The live page reads the speed layer (Redis, written by the `stream` service); the
+history page reads Delta tables.
+
 Data access lives in queries.py; this file only lays out the pages.
 """
 
@@ -46,35 +49,45 @@ def status_legend() -> None:
 # ---------------------------------------------------------------- Live page
 
 
-@st.fragment(run_every="60s")
+@st.fragment(run_every="30s")
 def live_page() -> None:
-    df = queries.live_stations()
-    if df is None:
-        st.info("No live data yet. Start the producer and the lake sink: `docker compose up -d`, "
-                "then wait about two minutes for the first write.")
+    live = queries.live_state()
+    if live is None:
+        st.info("No live data in Redis yet. Start the speed layer with `docker compose up -d stream` "
+                "(it needs Kafka and the producer running); stations appear within a minute.")
         return
-
-    as_of = df["event_time"].max().tz_convert(queries.NY_TZ)
-    age_min = (pd.Timestamp.now(tz="UTC") - df["event_time"].max()).total_seconds() / 60
-    counts = df["status"].value_counts()
+    stats, df, alerts, warnings = live["stats"], live["stations"], live["alerts"], live["warnings"]
+    now = df["event_time"].max()  # the stream's clock: newest event written to Redis
+    lag_s = (pd.Timestamp.now(tz="UTC") - now).total_seconds()
     in_service = df[df["status"] != "Out of service"]
 
-    c = st.columns(5)
-    c[0].metric("Stations in service", f"{len(in_service):,}")
-    c[1].metric("Empty now", f"{counts.get('Empty', 0):,}", help="No bike to rent")
-    c[2].metric("Full now", f"{counts.get('Full', 0):,}", help="No free dock to return a bike")
-    c[3].metric("Bikes available", f"{int(in_service['num_bikes_available'].sum()):,}")
-    c[4].metric("Data as of (New York)", as_of.strftime("%H:%M"), help=f"{age_min:.0f} min ago")
+    c = st.columns(6)
+    c[0].metric("Stations in service", f"{int(stats['total']) - int(stats['out_of_service']):,}")
+    c[1].metric("Empty now", f"{int(stats['empty']):,}", help="No bike to rent")
+    c[2].metric("Full now", f"{int(stats['full']):,}", help="No free dock to return a bike")
+    c[3].metric("Open alerts", f"{int(stats['alerts_open']):,}",
+                help="Empty or full for at least 2 minutes; critical after 10 minutes")
+    c[4].metric("Bikes available", f"{int(in_service['bikes'].sum()):,}")
+    c[5].metric("As of (NY time)", now.tz_convert(queries.NY_TZ).strftime("%H:%M"),
+                help=f"Newest station update in Redis, {lag_s:.0f} s ago")
 
-    m = df.assign(
-        color=df["status"].map(lambda s: _rgb(STATUS_COLORS[s])),
-        order=df["status"].map(STATUS_ORDER.index),
-        changed=df["last_change_ny"].dt.strftime("%H:%M"),
+    minutes = ((now - df["condition_since"]).dt.total_seconds() // 60).astype("Int64")
+    problem = df["status"].isin(["Empty", "Full"]) & minutes.notna()
+    severity = df["alert_severity"].fillna("").str.capitalize()
+    note = pd.Series("", index=df.index)
+    note[problem] = df["status"] + " for " + minutes.astype(str) + " min"
+    note[problem & (severity != "")] = severity + " alert: " + note
+    m = df[df["lat"].notna()].assign(
+        color=lambda d: d["status"].map(lambda s: _rgb(STATUS_COLORS[s])),
+        order=lambda d: d["status"].map(STATUS_ORDER.index),
+        note=note,
+        bikes_txt=lambda d: d["bikes"].fillna(0).astype(int).astype(str),
+        ebikes_txt=lambda d: d["ebikes"].fillna(0).astype(int).astype(str),
+        docks_txt=lambda d: d["docks"].fillna(0).astype(int).astype(str),
     ).sort_values("order")
     layer = pdk.Layer(
         "ScatterplotLayer",
-        data=m[["lon", "lat", "color", "name", "status", "num_bikes_available",
-                "num_ebikes_available", "num_docks_available", "changed"]],
+        data=m[["lon", "lat", "color", "name", "status", "bikes_txt", "ebikes_txt", "docks_txt", "note"]],
         get_position="[lon, lat]",
         get_fill_color="color",
         get_line_color=[255, 255, 255],
@@ -86,22 +99,44 @@ def live_page() -> None:
         pickable=True,
     )
     tooltip = {
-        "html": "<b>{name}</b><br/>{status}<br/>Bikes: {num_bikes_available} "
-                "(e-bikes: {num_ebikes_available})<br/>Free docks: {num_docks_available}"
-                "<br/>Last change: {changed}",
+        "html": "<b>{name}</b><br/>{status}<br/>Bikes: {bikes_txt} (e-bikes: {ebikes_txt})"
+                "<br/>Free docks: {docks_txt}<br/>{note}",
     }
     view = pdk.ViewState(latitude=40.735, longitude=-73.97, zoom=11.2)
     status_legend()
     st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view, tooltip=tooltip), height=560)
 
-    cols = {"name": "Station", "num_bikes_available": "Bikes", "num_ebikes_available": "E-bikes",
-            "num_docks_available": "Free docks", "num_bikes_disabled": "Disabled bikes",
-            "changed": "Last change"}
-    left, right = st.columns(2)
-    for col, label in ((left, "Empty"), (right, "Full")):
-        rows = m[m["status"] == label].sort_values("name")
-        col.subheader(f"{label} stations ({len(rows)})")
-        col.dataframe(rows[list(cols)].rename(columns=cols), hide_index=True, height=300)
+    st.subheader(f"Open alerts ({len(alerts)})")
+    st.caption("A station gets an alert once it has been empty or full for 2 minutes. The alert turns "
+               "critical after 10 minutes and closes when the station recovers.")
+    if alerts.empty:
+        st.write("No open alerts.")
+    else:
+        t = alerts.assign(
+            Station=alerts["name"].fillna(alerts["station_id"]),
+            Problem=alerts["kind"].map({"empty": "Empty", "full": "Full"}),
+            Severity=alerts["severity"].str.capitalize(),
+            minutes=((now - alerts["condition_since"]).dt.total_seconds() // 60).astype("Int64"),
+            Opened=alerts["opened_at"].dt.tz_convert(queries.NY_TZ).dt.strftime("%H:%M"),
+        ).sort_values(["Severity", "minutes"], ascending=[True, False])  # critical first
+        cols = {"Station": "Station", "Problem": "Problem", "Severity": "Severity", "minutes": "For (min)",
+                "bikes": "Bikes", "docks": "Free docks", "Opened": "Opened"}
+        st.dataframe(t[list(cols)].rename(columns=cols), hide_index=True, height=360)
+
+    st.subheader("30-minute warnings")
+    if live["profiles"].get("status") != "loaded":
+        st.caption("Not available yet: the warnings need the demand profiles from batch processing, "
+                   "which the speed layer reports as missing.")
+    elif warnings.empty:
+        st.caption("No station is expected to empty or fill in the next 30 minutes.")
+    else:
+        w = warnings.assign(
+            Station=warnings["name"].fillna(warnings["station_id"]),
+            Expected=warnings["kind"].map({"likely_empty": "Likely empty", "likely_full": "Likely full"}),
+        ).sort_values("eta_minutes")
+        cols = {"Station": "Station", "Expected": "Expected", "eta_minutes": "In (min)", "bikes": "Bikes",
+                "docks": "Free docks", "confidence": "Confidence"}
+        st.dataframe(w[list(cols)].rename(columns=cols), hide_index=True, height=300)
 
 
 # ---------------------------------------------------------------- History page
