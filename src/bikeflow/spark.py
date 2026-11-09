@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import os
+import sys
 from functools import lru_cache
 
 from bikeflow import config
@@ -50,6 +51,13 @@ def jars_baked_in() -> bool:
 
 def get_spark(app_name: str = "bikeflow", kafka: bool = False, extra_conf: dict | None = None):
     from pyspark.sql import SparkSession
+
+    # PySpark resolves the interpreter of its Python workers from PYSPARK_PYTHON and
+    # falls back to "python3", which on Windows is often the Microsoft Store alias and
+    # cannot be spawned by the JVM ("Python worker exited unexpectedly"). Point it at
+    # the interpreter that runs this code, unless the environment already says otherwise.
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
     s = config.settings
     builder = (

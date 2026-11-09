@@ -23,3 +23,14 @@ checkpoint/
 .idea/
 .vscode/
 .DS_Store
+
+# Run logs (the streaming job can write here with --log-file logs/stream.log).
+# The folder is kept, its contents are not.
+logs/*
+!logs/.gitkeep
+!logs/README.md
+*.log
+
+# Documents that are not code: the course proposal, exported reports.
+*.pdf
+

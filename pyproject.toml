@@ -12,6 +12,7 @@ dependencies = []
 
 [project.scripts]
 bikeflow-ingest = "bikeflow.ingest.cli:main"
+bikeflow-stream = "bikeflow.streaming.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -19,7 +20,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-markers = ["spark: needs pyspark + Java (skipped automatically if unavailable)"]
+markers = [
+    "spark: needs pyspark + Java (skipped automatically if unavailable)",
+    "redis: needs a Redis server at REDIS_URL (skipped automatically if unreachable)",
+]
 
 [tool.ruff]
 line-length = 120
