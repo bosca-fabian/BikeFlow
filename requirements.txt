@@ -20,3 +20,6 @@ tzdata==2026.6
 redis==6.4.0
 
 # --- Add below (e.g. streamlit) ---
+
+# --- Dashboard (serving layer) ---
+streamlit==1.66.1

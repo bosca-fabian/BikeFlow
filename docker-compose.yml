@@ -105,6 +105,19 @@ services:
     ports:
       - "4041:4040"
 
+  # Streamlit dashboard: http://localhost:8501. The repo is mounted, so code edits show up on reload.
+  dashboard:
+    <<: *app
+    working_dir: /app
+    command: ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0",
+              "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
+    volumes:
+      - .:/app
+      - ${BIKEFLOW_DATA:-./data}:/app/data
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+
   # Shared environment for everyone's own code (Spark jobs, scripts, tests); the repo is mounted.
   spark:
     <<: *app
