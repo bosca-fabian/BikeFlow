@@ -259,22 +259,23 @@ class RedisStateWriter:
     def _write_stats(self, stats: dict, meta: dict, now: datetime) -> None:
         """Counters for the live view and health of the last micro-batch."""
         counts = stats.get("counts") or {}
+        live = {
+            "ok": counts.get(model.STATUS_OK, 0),
+            "empty": counts.get(model.STATUS_EMPTY, 0),
+            "full": counts.get(model.STATUS_FULL, 0),
+            "out_of_service": counts.get(model.STATUS_OUT_OF_SERVICE, 0),
+            "total": sum(counts.values()),
+            "alerts_open": stats.get("alerts_open", 0),
+            "warnings": stats.get("warnings_active", 0),
+            "updated_at": model.iso(now),
+        }
+        # An empty micro-batch (no new message since the last one) has no event time and
+        # no lag: keep the previous values instead of blanking them (Redis rejects None).
+        if meta.get("event_time_max") is not None:
+            live["event_time"] = model.iso(meta["event_time_max"])
+            live["lag_seconds"] = "" if meta.get("lag_seconds") is None else meta["lag_seconds"]
         pipe = self.client.pipeline(transaction=False)
-        pipe.hset(
-            redis_keys.stats_live(),
-            mapping={
-                "ok": counts.get(model.STATUS_OK, 0),
-                "empty": counts.get(model.STATUS_EMPTY, 0),
-                "full": counts.get(model.STATUS_FULL, 0),
-                "out_of_service": counts.get(model.STATUS_OUT_OF_SERVICE, 0),
-                "total": sum(counts.values()),
-                "alerts_open": stats.get("alerts_open", 0),
-                "warnings": stats.get("warnings_active", 0),
-                "event_time": model.iso(meta.get("event_time_max")),
-                "lag_seconds": meta.get("lag_seconds", ""),
-                "updated_at": model.iso(now),
-            },
-        )
+        pipe.hset(redis_keys.stats_live(), mapping=live)
         batch = {
             "epoch_id": meta.get("epoch_id"),
             "rows": meta.get("rows"),

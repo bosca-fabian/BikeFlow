@@ -76,6 +76,9 @@ class FakeRedis:
         self._purge(key)
         data = dict(mapping or {})
         data.update(kwargs)
+        # Like redis-py, which raises DataError before sending anything.
+        if any(v is None for v in data.values()):
+            raise TypeError(f"HSET {key}: None is not a valid Redis value ({data})")
         bucket = self.hashes.setdefault(key, {})
         bucket.update({str(k): str(v) for k, v in data.items()})
         return len(data)

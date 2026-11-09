@@ -96,7 +96,7 @@ def test_state_alerts_and_counters_survive_a_real_redis(writer):
     alert_id = outcome.active["alert_id"]
     assert writer.client.zrange(redis_keys.alerts_active(), 0, -1) == [alert_id]
     assert writer.client.hgetall(redis_keys.alert(alert_id))["severity"] == "warning"
-    assert writer.client.strlen(redis_keys.alerts_events()) > 0  # a stream entry was added
+    assert writer.client.xlen(redis_keys.alerts_events()) > 0  # a stream entry was added
     assert writer.client.ttl(redis_keys.alert(alert_id)) > 0
 
     live = writer.client.hgetall(redis_keys.stats_live())
