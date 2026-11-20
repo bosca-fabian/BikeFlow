@@ -142,7 +142,7 @@ def live_page() -> None:
 # ---------------------------------------------------------------- History page
 
 
-@st.cache_data(show_spinner="Reading trips…")
+@st.cache_data(show_spinner="Reading the aggregated tables…")
 def history_data(months: tuple[str, ...]):
     # `months` is only the cache key: a new month in the lake recomputes everything.
     return (queries.hour_weekday(), queries.monthly(), queries.busiest_stations(),
@@ -152,8 +152,8 @@ def history_data(months: tuple[str, ...]):
 def history_page() -> None:
     months = queries.months_loaded()
     if not months:
-        st.info("No trips in the lake yet. Load at least one month with the batch scripts "
-                "(see README_batch.md).")
+        st.info("No aggregated tables yet. Load at least one month with the batch scripts, then "
+                "run `batch/09_dashboard_aggregates.py` (see README_batch.md).")
         return
     hw, mo, top, wd = history_data(tuple(months))
     span = months[0] if len(months) == 1 else f"{months[0]} to {months[-1]}"

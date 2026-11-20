@@ -5,17 +5,15 @@ station state, open alerts and 30-minute warnings. Keys and fields are documente
 docs/SPEED_LAYER.md; keys are built with `bikeflow.streaming.redis_keys`, so they match
 the job. The dashboard only reads Redis, never writes it.
 
-History page: Delta tables read with `deltalake` (no Spark). The aggregates are computed
-here from `trips_clean` for the months loaded in the local lake. On the full 2024-2026
-data they will come from the batch-processing tables instead; only the functions in the
-"History" section change, not the page.
+History page: the gold tables built by batch processing (`batch/09_dashboard_aggregates.py`:
+`agg_hourly`, `agg_monthly`, `agg_weather`), read with `deltalake` (no Spark). They are small,
+so the page never touches the 125 million rows of `trips_clean`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pyarrow.dataset as ds
 import redis
@@ -28,6 +26,8 @@ from bikeflow.streaming import redis_keys
 NY_TZ = "America/New_York"
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 # Redis status words -> labels shown on the page.
+# Rain classes as written by batch/09_dashboard_aggregates.py, in display order.
+RAIN_CLASSES = ["Dry (< 1 mm)", "Wet (1–10 mm)", "Heavy rain (≥ 10 mm)"]
 STATUS_LABELS = {"ok": "OK", "empty": "Empty", "full": "Full", "out_of_service": "Out of service"}
 
 
@@ -117,79 +117,55 @@ def live_state() -> dict | None:
 
 
 def months_loaded() -> list[str]:
-    """Months present in trips_clean, e.g. ['2025-09']."""
-    t = _table("trips_clean")
-    if t is None:
+    """Months in the aggregated tables, e.g. ['2025-09']."""
+    mo = _dataset("agg_monthly")
+    if mo is None:
         return []
-    parts = {(int(p["year"]), int(p["month"])) for p in t.partitions()}
-    return [f"{y}-{m:02d}" for y, m in sorted(parts)]
-
-
-def _trips(columns: list[str]):
-    return _dataset("trips_clean").to_table(columns=columns)
-
-
-def _in_loaded_months(dates: pd.Series) -> pd.Series:
-    """True for dates inside the loaded months. A monthly trip file also holds a few
-    trips that started late on the last day of the previous month (they ended in this
-    month), e.g. 847 trips on 31 Aug 2025 in the September file; such partial days
-    would distort per-day figures."""
-    return pd.to_datetime(dates).dt.strftime("%Y-%m").isin(months_loaded())
+    labels = mo.to_table(columns=["month_label"]).column("month_label").unique().to_pylist()
+    return sorted(labels)
 
 
 def hour_weekday() -> pd.DataFrame:
     """Average trips started per hour, by weekday and hour of day (New York time).
 
-    Averaged over the number of days of each weekday in the loaded months, so
-    weekdays that occur 4 or 5 times in a month are comparable.
+    Summed over stations from agg_hourly, then divided by the number of days of each
+    weekday in the loaded months, so weekdays that occur 4 or 5 times are comparable.
     """
-    t = _trips(["start_date", "weekday_num", "start_hour"])
-    g = t.group_by(["start_date", "weekday_num", "start_hour"]).aggregate([([], "count_all")]).to_pandas()
-    g = g[_in_loaded_months(g["start_date"])]
-    days = g.groupby("weekday_num")["start_date"].nunique()
-    df = g.groupby(["weekday_num", "start_hour"])["count_all"].sum().reset_index()
-    df["avg_trips"] = df["count_all"] / df["weekday_num"].map(days)
+    t = _dataset("agg_hourly").to_table(columns=["weekday_num", "hour", "trips"])
+    df = t.group_by(["weekday_num", "hour"]).aggregate([("trips", "sum")]).to_pandas()
+    days = pd.Series(0, index=range(1, 8))
+    for month in months_loaded():
+        dates = pd.date_range(f"{month}-01", periods=pd.Period(month).days_in_month)
+        days = days.add((dates.dayofweek + 1).value_counts(), fill_value=0)
+    df["avg_trips"] = df["trips_sum"] / df["weekday_num"].map(days)
     df["weekday"] = df["weekday_num"].map(lambda d: WEEKDAYS[d - 1])
-    return df.rename(columns={"start_hour": "hour"})[["weekday_num", "weekday", "hour", "avg_trips"]]
+    return df[["weekday_num", "weekday", "hour", "avg_trips"]]
 
 
 def monthly() -> pd.DataFrame:
-    """Trips per month with the share of members and of e-bikes (in %)."""
-    t = _trips(["year", "month", "member_casual", "rideable_type"])
-    g = t.group_by(["year", "month", "member_casual", "rideable_type"]).aggregate([([], "count_all")]).to_pandas()
-    g["month_label"] = g["year"].astype(int).astype(str) + "-" + g["month"].astype(int).map("{:02d}".format)
-    out = g.groupby("month_label").agg(trips=("count_all", "sum")).reset_index()
-    members = g[g["member_casual"] == "member"].groupby("month_label")["count_all"].sum()
-    ebikes = g[g["rideable_type"] == "electric_bike"].groupby("month_label")["count_all"].sum()
-    out["member_pct"] = 100 * out["month_label"].map(members).fillna(0) / out["trips"]
-    out["ebike_pct"] = 100 * out["month_label"].map(ebikes).fillna(0) / out["trips"]
-    return out
+    """Trips per month with the share of members and of e-bikes (in %), from agg_monthly."""
+    mo = _dataset("agg_monthly").to_table(columns=["month_label", "trips", "member_trips", "ebike_trips"])
+    g = mo.to_pandas().groupby("month_label")[["trips", "member_trips", "ebike_trips"]].sum().reset_index()
+    g["member_pct"] = 100 * g["member_trips"] / g["trips"]
+    g["ebike_pct"] = 100 * g["ebike_trips"] / g["trips"]
+    return g[["month_label", "trips", "member_pct", "ebike_pct"]]
 
 
 def busiest_stations(top: int = 15) -> pd.DataFrame:
-    """Stations with the most trips started. Uses the names in the trip files, because
-    some busy stations from the history are no longer in the live feed."""
-    t = _trips(["start_station_name"])
-    g = t.group_by(["start_station_name"]).aggregate([([], "count_all")]).to_pandas()
-    g = g.rename(columns={"start_station_name": "station", "count_all": "trips"})
+    """Stations with the most trips started, from agg_monthly. Mapped stations carry
+    their live-feed name; stations no longer in the live feed keep their trip-file name."""
+    mo = _dataset("agg_monthly").to_table(columns=["station_name", "trips"])
+    g = mo.group_by(["station_name"]).aggregate([("trips", "sum")]).to_pandas()
+    g = g.rename(columns={"station_name": "station", "trips_sum": "trips"})
     return g.nlargest(top, "trips")
 
 
 def daily_weather() -> pd.DataFrame:
-    """Trips per day next to that day's precipitation (mm) and mean temperature (°C).
-
-    Rain classes follow the usual climate-index thresholds: a wet day has at least
-    1 mm, a heavy-rain day at least 10 mm.
-    """
-    trips = _trips(["start_date"]).group_by(["start_date"]).aggregate([([], "count_all")]).to_pandas()
-    trips = trips.rename(columns={"start_date": "date", "count_all": "trips"})
-    trips = trips[_in_loaded_months(trips["date"])]
-    w = _dataset("weather_hourly").to_table(columns=["date", "precipitation", "temperature_2m"]).to_pandas()
-    w = w.groupby("date").agg(precip_mm=("precipitation", "sum"), temp_c=("temperature_2m", "mean")).reset_index()
-    df = trips.merge(w, on="date", how="inner")
-    df["rain"] = pd.cut(
-        df["precip_mm"], bins=[-np.inf, 1, 10, np.inf], right=False,
-        labels=["Dry (< 1 mm)", "Wet (1–10 mm)", "Heavy rain (≥ 10 mm)"],
-    )
-    df["weekday"] = pd.to_datetime(df["date"]).dt.dayofweek.map(lambda d: WEEKDAYS[d])
+    """Trips per day next to that day's precipitation (mm) and mean temperature (°C),
+    from agg_weather. Rain classes follow the usual climate-index thresholds: a wet day
+    has at least 1 mm, a heavy-rain day at least 10 mm."""
+    cols = ["date", "weekday_num", "trips", "precip_mm", "temp_c", "rain_category"]
+    df = _dataset("agg_weather").to_table(columns=cols).to_pandas().sort_values("date")
+    df["rain"] = pd.Categorical(df.pop("rain_category"), categories=RAIN_CLASSES, ordered=True)
+    df["weekday"] = df.pop("weekday_num").map(lambda d: WEEKDAYS[d - 1])
     return df
