@@ -92,11 +92,14 @@ def build_weather_aggregates(spark, trips_enriched: DataFrame, weather: DataFram
     for y, m in months:
         cond = (F.col("year") == y) & (F.col("month") == m)
         ym_filter = ym_filter | cond
-    valid_ym = [f"{y}-{m:02d}" for y, m in months]
+    # Each trip counts in its own month only (same rule as agg_monthly): a month's file also
+    # holds a few hundred trips that started on the last day of the month before, which
+    # would otherwise give that date a second, tiny row.
+    own_month = F.date_format("start_date", "yyyy-MM") == F.format_string("%04d-%02d", F.col("year"), F.col("month"))
 
     daily_trips = (
         trips_enriched.where(ym_filter)
-        .where(F.date_format("start_date", "yyyy-MM").isin(valid_ym))
+        .where(own_month)
         .groupBy(F.col("start_date").alias("date"), "year", "month", "weekday_num", "weekday")
         .agg(
             F.count("*").alias("trips"),
@@ -125,7 +128,14 @@ def build_weather_aggregates(spark, trips_enriched: DataFrame, weather: DataFram
     )
 
     out_path = table_path("agg_weather")
-    joined.coalesce(1).write.format("delta").mode("overwrite").option("overwriteSchema", True).save(out_path)
+    writer = joined.coalesce(1).write.format("delta").mode("overwrite")
+    if DeltaTable.isDeltaTable(spark, out_path):
+        # Replace only the months that were run, so --month keeps the other months.
+        months_sql = " OR ".join(f"(year = {y} AND month = {m})" for y, m in months)
+        writer = writer.option("replaceWhere", months_sql)
+    else:
+        writer = writer.option("overwriteSchema", True)
+    writer.save(out_path)
     print(f"agg_weather: {joined.count():,} daily rows written to {out_path}")
 
 
