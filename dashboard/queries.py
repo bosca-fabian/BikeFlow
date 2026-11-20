@@ -163,9 +163,15 @@ def busiest_stations(top: int = 15) -> pd.DataFrame:
 def daily_weather() -> pd.DataFrame:
     """Trips per day next to that day's precipitation (mm) and mean temperature (°C),
     from agg_weather. Rain classes follow the usual climate-index thresholds: a wet day
-    has at least 1 mm, a heavy-rain day at least 10 mm."""
-    cols = ["date", "weekday_num", "trips", "precip_mm", "temp_c", "rain_category"]
-    df = _dataset("agg_weather").to_table(columns=cols).to_pandas().sort_values("date")
+    has at least 1 mm, a heavy-rain day at least 10 mm.
+
+    A month's trip file also holds a few hundred trips that started on the last day of
+    the month before. agg_weather keeps them as a second, tiny row for that date; they
+    are dropped here, as agg_monthly drops them, so each date appears once."""
+    cols = ["date", "year", "month", "weekday_num", "trips", "precip_mm", "temp_c", "rain_category"]
+    df = _dataset("agg_weather").to_table(columns=cols).to_pandas()
+    day = pd.to_datetime(df["date"])
+    df = df[(day.dt.year == df.pop("year")) & (day.dt.month == df.pop("month"))].sort_values("date")
     df["rain"] = pd.Categorical(df.pop("rain_category"), categories=RAIN_CLASSES, ordered=True)
     df["weekday"] = df.pop("weekday_num").map(lambda d: WEEKDAYS[d - 1])
     return df
