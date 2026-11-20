@@ -20,7 +20,7 @@ from bikeflow.lake import table_path
 from bikeflow.streaming import model
 
 HORIZON_MINUTES = 30
-# Below this the profile says nothing useful (fewer than one bike per two hours).
+# Below this the profile says nothing useful (fewer than one bike per two hours), in bikes per hour.
 MIN_ABS_NET_FLOW = 0.5
 # Confidence thresholds, in bikes per hour.
 CONFIDENCE_HIGH = 5.0
@@ -187,17 +187,22 @@ def build_warning(
     net_flow = net_flow_over_horizon(
         profiles, observation.station_id, observation.weekday_num, observation.local_hour, minute, horizon_minutes
     )
-    if net_flow is None or abs(net_flow) < MIN_ABS_NET_FLOW:
+    if net_flow is None:
+        return None
+    # net_flow is the bikes gained over the whole horizon; the ETA, the minimum flow and
+    # the confidence levels are in bikes per hour, so turn it into an hourly rate.
+    flow_per_hour = net_flow / (horizon_minutes / 60)
+    if abs(flow_per_hour) < MIN_ABS_NET_FLOW:
         return None
 
     predicted_bikes = observation.bikes + net_flow
     predicted_docks = observation.docks - net_flow
     if predicted_bikes <= 0:
         kind = LIKELY_EMPTY
-        eta = minutes_until_zero(observation.bikes, net_flow)
+        eta = minutes_until_zero(observation.bikes, flow_per_hour)
     elif predicted_docks <= 0:
         kind = LIKELY_FULL
-        eta = minutes_until_zero(observation.docks, -net_flow)
+        eta = minutes_until_zero(observation.docks, -flow_per_hour)
     else:
         return None
 
@@ -211,9 +216,9 @@ def build_warning(
         "station_size": observation.size,
         "predicted_bikes": round(predicted_bikes, 1),
         "predicted_docks": round(predicted_docks, 1),
-        "net_flow_per_hour": round(net_flow, 2),
+        "net_flow_per_hour": round(flow_per_hour, 2),
         "eta_minutes": eta,
-        "confidence": confidence_for(net_flow),
+        "confidence": confidence_for(flow_per_hour),
         "local_hour": observation.local_hour,
         "weekday_num": observation.weekday_num,
         "basis": "demand_profiles",

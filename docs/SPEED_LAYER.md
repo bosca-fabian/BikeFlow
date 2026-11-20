@@ -112,13 +112,14 @@ usual demand at this hour and weekday". It is computed from the batch
 ```
 net30 = net(this hour) × min(0.5 h, time left in the hour) + net(next hour) × the rest
 predicted_bikes = bikes + net30        predicted_docks = docks - net30
+rate = net30 / 0.5 h                   (bikes per hour, stored as net_flow_per_hour)
 ```
 
 - `likely_empty` when `predicted_bikes <= 0`, `likely_full` when `predicted_docks <= 0`,
-  `eta_minutes` = when the count reaches zero at this flow.
+  `eta_minutes` = when the count reaches zero at `rate`.
 - Only for stations that are `ok` (empty/full stations already have an alert) and only
-  when the usual flow is strong enough (`|net| >= 0.5` bikes/hour); otherwise silence.
-- `confidence` is `high` / `medium` / `low` for `|net| >= 5`, `>= 2`, below.
+  when the usual flow is strong enough (`|rate| >= 0.5` bikes/hour); otherwise silence.
+- `confidence` is `high` / `medium` / `low` for `|rate| >= 5`, `>= 2`, below.
 
 `bf:warning:{station_id}` fields: `station_id`, `kind` (`likely_empty`/`likely_full`),
 `horizon_minutes`, `bikes`, `docks`, `station_size`, `predicted_bikes`,

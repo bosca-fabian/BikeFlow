@@ -76,7 +76,9 @@ def test_likely_empty_warning():
     assert warning is not None
     assert warning["kind"] == warnings.LIKELY_EMPTY
     assert warning["predicted_bikes"] == pytest.approx(-6.0)
-    assert warning["eta_minutes"] == 24  # 4 bikes at 10 bikes/hour
+    # -10 bikes over the 30 minutes is a rate of -20 bikes/hour: 4 bikes last 12 minutes.
+    assert warning["net_flow_per_hour"] == pytest.approx(-20.0)
+    assert warning["eta_minutes"] == 12
     assert warning["confidence"] == "high"
     assert warning["horizon_minutes"] == 30
     assert warning["expires_at_epoch"] == model.epoch(AT) + config.settings.warning_ttl_seconds
@@ -89,7 +91,8 @@ def test_likely_full_warning():
     assert warning is not None
     assert warning["kind"] == warnings.LIKELY_FULL
     assert warning["predicted_docks"] == pytest.approx(-7.0)
-    assert warning["eta_minutes"] == 18  # 3 docks at 10 docks/hour
+    assert warning["net_flow_per_hour"] == pytest.approx(20.0)
+    assert warning["eta_minutes"] == 9  # 3 docks at 20 docks/hour
 
 
 def test_no_warning_when_the_usual_flow_is_weak():
@@ -103,7 +106,7 @@ def test_no_warning_when_the_usual_flow_is_weak():
 
 
 def test_no_warning_when_the_station_is_healthy():
-    # 100 bikes will not run out in 30 minutes at 10 bikes/hour.
+    # 100 bikes will not run out in 30 minutes at 20 bikes/hour.
     assert warnings.build_warning(observation(bikes=100), model.STATUS_OK, profiles(), AT, 30) is None
 
 
