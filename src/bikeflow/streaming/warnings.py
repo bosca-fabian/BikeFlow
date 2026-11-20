@@ -1,25 +1,22 @@
-"""30-minute early warnings from the batch demand profiles.
+﻿"""30-minute early warnings from the batch demand profiles.
 
 The rule (Deliverable 1, section 4): warn about stations likely to empty or fill
 **within the next 30 minutes**, based on their usual demand **at that hour and
-weekday**. The demand comes from ``demand_profiles``, the aggregated table that the
-batch-processing lead (Tihamer) builds; the live message only says how many bikes
-and docks a station has now.
+weekday**. The demand comes from ``demand_profiles``, the aggregated table built by
+the batch layer; the live message only says how many bikes and docks a station has now.
 
-The table does not exist yet, so :func:`load_demand_profiles` and
-:func:`write_warnings_to_lake` are **blank functions** (they raise
-``NotImplementedError`` and say exactly what they expect). The job checks
-:func:`demand_profiles_available` first, so it runs fine without them: station
-state and the empty/full alerts work, and ``bf:meta:profiles`` says ``missing``.
-The forecast itself (:func:`build_warning`) is implemented and tested.
+:func:`write_warnings_to_lake` remains a blank function (raising ``NotImplementedError``)
+because warnings live in Redis only until a warning history table owner is agreed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from bikeflow import config
+from bikeflow.lake import table_path
 from bikeflow.streaming import model
 
 HORIZON_MINUTES = 30
@@ -32,7 +29,6 @@ CONFIDENCE_MEDIUM = 2.0
 LIKELY_EMPTY = "likely_empty"
 LIKELY_FULL = "likely_full"
 
-# What the batch-processing lead has to write, so this module can be finished.
 DEMAND_PROFILE_COLUMNS = (
     "station_id",
     "weekday_num",
@@ -62,40 +58,27 @@ class DemandProfile:
         return (self.station_id, self.weekday_num, self.hour)
 
 
-def demand_profiles_available() -> bool:
-    """``False`` until the batch side produces ``demand_profiles`` (blank on purpose)."""
-    return False
+def demand_profiles_available(table: str | None = None) -> bool:
+    """``True`` once the batch side produces ``demand_profiles``."""
+    table_name = table or config.settings.demand_profiles_table
+    path = table_path(table_name)
+    if "://" in path:
+        return True
+    return (Path(path) / "_delta_log").is_dir()
 
 
 def load_demand_profiles(spark=None, table: str | None = None) -> dict[tuple[str, int, int], DemandProfile]:
-    """BLANK: the demand profiles do not exist yet, so there is nothing to load.
-
-    What this must do once the batch-processing lead writes the table
-    (``settings.demand_profiles_table``, default ``demand_profiles``)::
-
-        df = spark.read.format("delta").load(table_path(table))
+    """Load expected hourly departures and arrivals from the batch Delta table."""
+    table_name = table or config.settings.demand_profiles_table
+    path = table_path(table_name)
+    if spark is not None:
+        df = spark.read.format("delta").load(path)
         return profiles_from_rows(df.collect())
 
-    Expected columns (agree with Tihamer before wiring it, then drop
-    ``demand_profiles_available`` and this ``NotImplementedError``):
+    from deltalake import DeltaTable
 
-    ==============  =======  ==================================================
-    column          type     meaning
-    ==============  =======  ==================================================
-    station_id      string   live-feed UUID (``station_id_map.station_uuid``)
-    weekday_num     long     New York weekday, Monday = 1 ... Sunday = 7
-    hour            long     New York hour, 0-23 (= ``trips_clean.start_hour``)
-    departures      double   average trips started at the station in that hour
-    arrivals        double   average trips ended at the station in that hour
-    ==============  =======  ==================================================
-
-    ``profiles_from_rows`` already accepts rows shaped like this, so finishing the
-    job is one read plus the call below.
-    """
-    raise NotImplementedError(
-        "demand profiles are not produced yet (batch processing lead): "
-        f"expected a Delta table with columns {', '.join(DEMAND_PROFILE_COLUMNS)}"
-    )
+    rows = DeltaTable(path).to_pyarrow_table().to_pylist()
+    return profiles_from_rows(rows)
 
 
 def write_warnings_to_lake(warnings: list[dict], spark=None) -> None:
@@ -238,4 +221,3 @@ def build_warning(
         "expires_at": model.iso(now + timedelta(seconds=ttl)),
         "expires_at_epoch": model.epoch(now + timedelta(seconds=ttl)),
     }
-

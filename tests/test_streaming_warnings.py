@@ -134,10 +134,33 @@ def test_confidence_follows_the_strength_of_the_flow():
     assert warnings.confidence_for(-1) == "low"
 
 
-def test_demand_profiles_are_a_blank_function_for_now():
+def test_demand_profiles_load_from_delta_table(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import pyarrow as pa
+    from deltalake import write_deltalake
+
+    monkeypatch.setattr(
+        config,
+        "settings",
+        SimpleNamespace(
+            lake_path=str(tmp_path),
+            demand_profiles_table="demand_profiles",
+            warning_ttl_seconds=config.settings.warning_ttl_seconds,
+        ),
+    )
     assert warnings.demand_profiles_available() is False
-    with pytest.raises(NotImplementedError):
-        warnings.load_demand_profiles()
+
+    rows = [
+        {"station_id": "station-1", "weekday_num": 3, "hour": 7, "departures": 20.0, "arrivals": 5.0},
+        {"station_id": "station-2", "weekday_num": 3, "hour": 7, "departures": 5.0, "arrivals": 25.0},
+    ]
+    write_deltalake(str(tmp_path / "demand_profiles"), pa.Table.from_pylist(rows))
+
+    assert warnings.demand_profiles_available() is True
+    loaded = warnings.load_demand_profiles()
+    assert loaded[("station-1", 3, 7)].net_flow_per_hour == -15.0
+    assert loaded[("station-2", 3, 7)].net_flow_per_hour == 20.0
+
     with pytest.raises(NotImplementedError):
         warnings.write_warnings_to_lake([{"station_id": "station-1"}])
 

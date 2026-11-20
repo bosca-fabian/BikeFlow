@@ -23,3 +23,6 @@ redis==6.4.0
 
 # --- Dashboard (serving layer) ---
 streamlit==1.66.1
+
+# --- Batch stretch goal (time series decomposition) ---
+statsmodels==0.15.0
